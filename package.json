@@ -34,7 +34,7 @@
     "test": "cd ./tests && npx playwright test",
     "test-ui": "cd ./tests && npx playwright test --ui --timeout 0",
     "dev": "npm run dev --prefix ./examples/recorder-crx",
-    "prepare": "npm ci && npm run build"
+    "prepare": "npm run build"
   },
   "workspaces": [
     "examples/recorder-crx",

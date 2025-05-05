@@ -44,6 +44,13 @@ export interface Crx {
   readonly fs: CrxFs;
 
   /**
+   * Force reset the Crx instance, clearing any existing promises
+   * and attempting to close any existing applications.
+   * This is useful when the application is in an inconsistent state.
+   */
+  forceReset(): Promise<void>;
+  
+  /**
    * @param options
    */
   start(options?: {

@@ -38,21 +38,76 @@ export class Crx extends ChannelOwner<channels.CrxChannel> implements api.Crx {
     return (crx as any)._object;
   }
 
-  async start(options?: channels.CrxStartOptions) {
-    if (options?.incognito) {
-      if (this._incognitoCrxPromise)
-        throw new Error(`incognito crxApplication is already started`);
-      this._incognitoCrxPromise = this._start(options, () => this._incognitoCrxPromise = undefined);
-      return await this._incognitoCrxPromise;
-    } else {
-      if (this._crxAppPromise)
-        throw new Error(`crxApplication is already started`);
-      this._crxAppPromise = this._start(options ?? {}, () => this._crxAppPromise = undefined);
-      return await this._crxAppPromise;
+  /**
+   * Force reset the Crx instance, clearing any existing promises
+   * and attempting to close any existing applications.
+   * This is useful when the application is in an inconsistent state.
+   */
+  async forceReset(): Promise<void> {
+    // Store references to existing promises
+    const oldCrxPromise = this._crxAppPromise;
+    const oldIncognitoPromise = this._incognitoCrxPromise;
+
+    // Immediately clear the promises to allow new instances
+    this._crxAppPromise = undefined;
+    this._incognitoCrxPromise = undefined;
+
+    // Try to properly close existing instances
+    if (oldCrxPromise) {
+      try {
+        const app = await oldCrxPromise;
+        await app.close().catch(() => {});
+      } catch (e) {
+        // Ignore errors - we're forcing a reset
+      }
+    }
+
+    if (oldIncognitoPromise) {
+      try {
+        const app = await oldIncognitoPromise;
+        await app.close().catch(() => {});
+      } catch (e) {
+        // Ignore errors - we're forcing a reset
+      }
     }
   }
 
-  private async _start(options: channels.CrxStartOptions, onClose: () => void) {
+  async start(options?: channels.CrxStartOptions): Promise<CrxApplication> {
+    try {
+      if (options?.incognito) {
+        if (this._incognitoCrxPromise)
+          throw new Error(`incognito crxApplication is already started`);
+        this._incognitoCrxPromise = this._start(options, () => this._incognitoCrxPromise = undefined);
+        return await this._incognitoCrxPromise;
+      } else {
+        if (this._crxAppPromise)
+          throw new Error(`crxApplication is already started`);
+        this._crxAppPromise = this._start(options ?? {}, () => this._crxAppPromise = undefined);
+        return await this._crxAppPromise;
+      }
+    } catch (error: any) {
+      // If we get "already started" error, try to detect if the instance is actually usable
+      if (error.message && error.message.includes('already started')) {
+        const existingPromise = options?.incognito ? this._incognitoCrxPromise : this._crxAppPromise;
+        if (existingPromise) {
+          try {
+            // Try a simple operation to check if the instance is still valid
+            const app = await existingPromise;
+            const context = app.context();
+            await context.pages(); // This will throw if the connection is broken
+            return app; // If we get here, the instance is still usable
+          } catch (e) {
+            // Instance is broken, force reset and retry
+            await this.forceReset();
+            return this.start(options);
+          }
+        }
+      }
+      throw error;
+    }
+  }
+
+  private async _start(options: channels.CrxStartOptions, onClose: () => void): Promise<CrxApplication> {
     const crxApp = from<CrxApplication>((await this._channel.start(options ?? {})).crxApplication);
     crxApp.on('close', onClose);
     return crxApp;

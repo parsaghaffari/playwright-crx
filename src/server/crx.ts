@@ -60,56 +60,111 @@ export class Crx extends SdkObject {
     this.player = new CrxPlayer(this);
   }
 
-  async start(options?: crxchannels.CrxStartParams): Promise<CrxApplication> {
-    const { incognito, contextOptions } = options ?? {};
-    const device = deviceDescriptors[options?.deviceName as keyof DeviceDescriptor] ?? {};
-    const viewport = contextOptions?.viewport ?? device.viewport;
-    const newContextOptions: channels.BrowserNewContextOptions = {
-      noDefaultViewport: !viewport,
-      ...device,
-      ...contextOptions,
-      viewport,
-    };
-    if (!this._transport && !this._browserPromise) {
-      const browserLogsCollector = new RecentLogsCollector();
-      const browserProcess: BrowserProcess = {
-        onclose: undefined,
-        process: undefined,
-        // browser.close() calls this function, and closing transport will trigger
-        // Browser.Events.Disconnected and force the browser to resolve the close promise.
-        close: () => this._transport!.closeAndWait(),
-        kill: () => Promise.resolve(),
-      };
-      const browserOptions: BrowserOptions = {
-        name: 'chromium',
-        isChromium: true,
-        headful: true,
-        persistent: newContextOptions,
-        browserProcess,
-        protocolLogger: helper.debugProtocolLogger(),
-        browserLogsCollector,
-        originalLaunchOptions: {},
-        artifactsDir: '/tmp/artifacts',
-        downloadsPath: '/tmp/downloads',
-        tracesDir: '/tmp/traces',
-        ...options,
-      };
-      this._transport = new CrxTransport();
-      this._browserPromise = CRBrowser.connect(this.attribution.playwright, this._transport, browserOptions);
-    }
-    const browser = await this._browserPromise!;
-    const transport = this._transport!;
+  /**
+   * Force reset the Crx instance, clearing any existing promises
+   * and attempting to close any existing applications.
+   * This is useful when the application is in an inconsistent state.
+   */
+  async forceReset(): Promise<void> {
+    // Store references to existing promises
+    const oldCrxPromise = this._crxApplicationPromise;
+    const oldIncognitoPromise = this._incognitoCrxApplicationPromise;
 
-    if (incognito) {
-      if (this._incognitoCrxApplicationPromise)
-        throw new Error(`incognito crxApplication is already started`);
-      this._incognitoCrxApplicationPromise = this._startIncognitoCrxApplication(browser, transport, newContextOptions);
-      return await this._incognitoCrxApplicationPromise;
-    } else {
-      if (this._crxApplicationPromise)
-        throw new Error(`crxApplication is already started`);
-      this._crxApplicationPromise = this._startCrxApplication(browser, transport);
-      return await this._crxApplicationPromise;
+    // Immediately clear the promises to allow new instances
+    this._crxApplicationPromise = undefined;
+    this._incognitoCrxApplicationPromise = undefined;
+
+    // Try to properly close existing instances
+    if (oldCrxPromise) {
+      try {
+        const app = await oldCrxPromise;
+        await app.close().catch(() => {});
+      } catch (e) {
+        // Ignore errors - we're forcing a reset
+      }
+    }
+
+    if (oldIncognitoPromise) {
+      try {
+        const app = await oldIncognitoPromise;
+        await app.close().catch(() => {});
+      } catch (e) {
+        // Ignore errors - we're forcing a reset
+      }
+    }
+  }
+
+  async start(options?: crxchannels.CrxStartParams): Promise<CrxApplication> {
+    try {
+      const { incognito, contextOptions } = options ?? {};
+      const device = deviceDescriptors[options?.deviceName as keyof DeviceDescriptor] ?? {};
+      const viewport = contextOptions?.viewport ?? device.viewport;
+      const newContextOptions: channels.BrowserNewContextOptions = {
+        noDefaultViewport: !viewport,
+        ...device,
+        ...contextOptions,
+        viewport,
+      };
+      if (!this._transport && !this._browserPromise) {
+        const browserLogsCollector = new RecentLogsCollector();
+        const browserProcess: BrowserProcess = {
+          onclose: undefined,
+          process: undefined,
+          // browser.close() calls this function, and closing transport will trigger
+          // Browser.Events.Disconnected and force the browser to resolve the close promise.
+          close: () => this._transport!.closeAndWait(),
+          kill: () => Promise.resolve(),
+        };
+        const browserOptions: BrowserOptions = {
+          name: 'chromium',
+          isChromium: true,
+          headful: true,
+          persistent: newContextOptions,
+          browserProcess,
+          protocolLogger: helper.debugProtocolLogger(),
+          browserLogsCollector,
+          originalLaunchOptions: {},
+          artifactsDir: '/tmp/artifacts',
+          downloadsPath: '/tmp/downloads',
+          tracesDir: '/tmp/traces',
+          ...options,
+        };
+        this._transport = new CrxTransport();
+        this._browserPromise = CRBrowser.connect(this.attribution.playwright, this._transport, browserOptions);
+      }
+      const browser = await this._browserPromise!;
+      const transport = this._transport!;
+
+      if (incognito) {
+        if (this._incognitoCrxApplicationPromise)
+          throw new Error(`incognito crxApplication is already started`);
+        this._incognitoCrxApplicationPromise = this._startIncognitoCrxApplication(browser, transport, newContextOptions);
+        return await this._incognitoCrxApplicationPromise;
+      } else {
+        if (this._crxApplicationPromise)
+          throw new Error(`crxApplication is already started`);
+        this._crxApplicationPromise = this._startCrxApplication(browser, transport);
+        return await this._crxApplicationPromise;
+      }
+    } catch (error: any) {
+      // If we get "already started" error, try to detect if the instance is actually usable
+      if (error.message && error.message.includes('already started')) {
+        const existingPromise = options?.incognito ? this._incognitoCrxApplicationPromise : this._crxApplicationPromise;
+        if (existingPromise) {
+          try {
+            // Try a simple operation to check if the instance is still valid
+            const app = await existingPromise;
+            const context = app._context;
+            await context.pages(); // This will throw if the connection is broken
+            return app; // If we get here, the instance is still usable
+          } catch (e) {
+            // Instance is broken, force reset and retry
+            await this.forceReset();
+            return this.start(options);
+          }
+        }
+      }
+      throw error;
     }
   }
 

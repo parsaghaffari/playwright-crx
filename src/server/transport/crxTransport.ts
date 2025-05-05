@@ -49,6 +49,33 @@ export class CrxTransport implements ConnectionTransport {
     chrome.tabs.onCreated.addListener(this._onPopupCreated);
   }
 
+  /**
+   * Force cleanup all debugger connections and internal state.
+   * This is useful when the transport is in an inconsistent state.
+   */
+  async forceCleanup(): Promise<void> {
+    // Get all tabs
+    const tabIds = [...this._tabToTarget.keys()];
+
+    // Clear internal maps first to prevent race conditions
+    this._tabToTarget.clear();
+    this._targetToTab.clear();
+    this._sessions.clear();
+
+    // Detach from all tabs
+    for (const tabId of tabIds) {
+      try {
+        await chrome.debugger.detach({ tabId }).catch(() => {});
+        this._progress?.log(`<chrome debugger forcibly detached from tab ${tabId}>`);
+      } catch (e) {
+        // Ignore errors
+      }
+    }
+
+    // Trigger onclose callback
+    this.onclose?.();
+  }
+
   isIncognito(tabIdOrTargetId: number | string | undefined) {
     if (typeof tabIdOrTargetId === 'string')
       tabIdOrTargetId = this.getTabId(tabIdOrTargetId);
